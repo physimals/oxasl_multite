@@ -65,7 +65,16 @@ def _multite_fabber_options(wsp, asldata):
         "infertexch" : True,
         "save-model-fit" : True,        
         "max-iterations": 30,
+        "t2" : float(wsp.ifnone("t2", 50)) / 1000
     })
+
+    if wsp.spatial:
+        options.update({
+            "PSP_byname1" : "ftiss",
+            "PSP_byname1_type" : "M",
+            "method" : "spatialvb",
+        })
+
     # Additional user-specified multiphase fitting options override the above
     options.update(wsp.ifnone("multite_options", {}))
     return options
@@ -83,36 +92,91 @@ def _aslrest_fabber_options(wsp, asldata):
     })
     return options
 
+def init_t2(wsp):
+    """
+    Initialize the T2 value by fitting the T2 decay part of the signal
+
+    We do not use Fabber for this (although it would be possible). Instead
+    we do a simple voxel-by-voxel least squares fit to a T2 decay model using
+    a subset of voxels with the strongest signals. We take the median of the T2 
+    value as our estimate since the mean can be affected by extreme values resulting
+    from fitting problems.
+    """
+    def t2model(tes, t2, *s0):
+        ntes = len(tes)/len(s0)
+        s0 = np.repeat(np.array(s0), ntes)
+        return s0 * np.exp(-1000*tes/t2)
+
+    wsp.log.write("  - Initializing T2 value by fit to T2 decay model\n")
+    
+    # Estimate T2 and a T2 corrected signal
+    wsp.data_multite = wsp.asldata.diff().reorder(out_order="etr")
+    data_multite = wsp.data_multite.data
+    volshape = list(data_multite.shape[:3])
+    
+    # Identify unmasked voxels with strongest signals
+    diffdata = data_multite.max(axis=-1) - data_multite.min(axis=-1)
+    thresh = np.percentile(diffdata, wsp.ifnone("multite_t2_init_percentile", 95))
+    wsp.log.write("  - Including unmasked voxels with signal > %f\n" % thresh)
+    mask_thresh = diffdata > thresh
+    roidata = np.logical_and(wsp.rois.mask.data > 0, diffdata > thresh)
+
+    data_multite_roi = data_multite[roidata]
+    nvoxels_roi = data_multite_roi.shape[0]
+    nvols = wsp.asldata.nvols
+    ntes = wsp.asldata.ntes
+    nsigs = int(nvols / ntes)
+    tes = np.array(wsp.asldata.tes * nsigs)
+    wsp.log.write("  - %i TEs, %i volumes, %i signals, %i voxels\n" % (ntes, nvols, nsigs, nvoxels_roi))
+
+    # Go through each voxel and fit the T2 decay model for S0 and T2
+    t2_roi = np.zeros((nvoxels_roi, ), dtype=np.float32)
+    sig_roi = np.zeros((nvoxels_roi, nsigs), dtype=np.float32)
+    for voxel_idx, data_multite_voxel in enumerate(data_multite_roi):
+        try:
+            # Initialize signal from maximum of the data at each time point
+            sig_init = [max(data_multite_voxel[sig_idx*ntes:(sig_idx+1)*ntes]) for sig_idx in range(nsigs)]
+            param_init=[wsp.t2, ] + sig_init
+            from scipy.optimize import curve_fit
+            popt, pcov = curve_fit(t2model, tes, data_multite_voxel, p0=param_init)
+            t2_roi[voxel_idx] = popt[0]
+            sig_roi[voxel_idx, :] = popt[1:]
+        except Exception as exc:
+            wsp.log.write("  - WARNING: fit failed for voxel: %i\n" % voxel_idx)
+    wsp.t2 = np.median(t2_roi)
+    wsp.log.write("  - Median T2: %f ms\n" % wsp.t2)
+
 def fit_init(wsp):
     """
     Do an initial fit on ftiss and delttiss using the aslrest model
+
+    The first stage of this is to apply a T2 correction to the multi-TE data
+    and take the mean across TEs, since the ASLREST model contains no T2
+    correction.
+
+    The resulting ASL data is put through the basic ASLREST model. We then run a single
+    iteration of the multi-TE model to generate an MVN, and insert the ftiss and delttiss
+    output from ASLREST into the MVN. This is then used to initialize the multi-TE run.
     """
+    wsp.log.write("  - Preparing initialization of perfusion from resting state model\n")
+    wsp.data_multite = wsp.asldata.diff().reorder(out_order="etr")
+    data_multite = wsp.data_multite.data
+    tes = wsp.asldata.tes
+    nvols_mean = int(wsp.asldata.nvols/len(tes))
 
-    # Estimate the FTISS/DELTISS using the first TE value. 
-    # This is easiest to extract if the TEs are slowest varying
-    # Note that it would be better to use all of the TEs but we need 
-    # to correct the output for a single TE so that wouldn't work.
-    # What *would* work is applying the T2 correction to the input
-    # data - will consider that for the future. 
-    data_multite = wsp.asldata.diff().reorder(out_order="tre").data
-    ntes = wsp.asldata.ntes
-    nvols_mean = int(wsp.asldata.nvols/ntes)
+    # Do the T2 correction and take the mean across TEs
     data_mean = np.zeros(list(data_multite.shape[:3]) + [nvols_mean])
-    for idx in range(1): # FIXME first TE only?
-        data_mean += data_multite[..., idx*nvols_mean:(idx+1)*nvols_mean]
-
-    wsp.asldata_mean = wsp.asldata.derived(image=data_mean, name="asldata", 
+    for idx, te in enumerate(tes):
+        t2_corr_factor = math.exp(1000 * te / wsp.t2)
+        wsp.log.write("  - Using T2 correction factor for TE=%f: %f\n" % (te, t2_corr_factor))
+        data_mean += data_multite[..., idx::wsp.asldata.ntes] * t2_corr_factor
+    wsp.asldata_mean = wsp.asldata.derived(image=data_mean/len(tes), name="asldata", 
                                            iaf="diff", order="tr", tes=[0])
 
     # Run ASLREST on the mean data to generate initial estimates for CBF and ATT
-    # Note that the multi-TE model has an additional T2 correction factor of exp(-te/T2) which ASLREST lacks.
-    # Since we are using the shortest TE we apply this correction to the FTISS estimates
     options = _aslrest_fabber_options(wsp, wsp.asldata_mean)
     result = _run_fabber(wsp.sub("aslrest"), options, "Running Fabber using standard ASL model for CBF/ATT initialization")
-    t2_corr_factor = math.exp(-wsp.asldata.tes[0] / wsp.t2)
-    wsp.log.write("  - Using T2 correction factor on ASLREST output: %f\n" % t2_corr_factor)
-    wsp.aslrest.mean_ftiss_t2corr = Image(wsp.aslrest.mean_ftiss.data / t2_corr_factor, header=wsp.aslrest.mean_ftiss.header)
-    wsp.aslrest.var_ftiss = Image(np.square(wsp.aslrest.std_ftiss.data / t2_corr_factor), header=wsp.aslrest.std_ftiss.header)
+    wsp.aslrest.var_ftiss = Image(np.square(wsp.aslrest.std_ftiss.data), header=wsp.aslrest.std_ftiss.header)
     wsp.aslrest.var_delttiss = Image(np.square(wsp.aslrest.std_delttiss.data), header=wsp.aslrest.std_delttiss.header)
 
     # Run the multi-TE model for 1 iteration to get an MVN in the correct format
@@ -123,11 +187,12 @@ def fit_init(wsp):
     # Merge the CBF and ATT estimates from the ASLREST run into the output MVN to generate an initialization MVN
     # for the final multi-TE fit.
     wsp.log.write("  - Merging CBF and ATT estimates into the MVN to initialize multi-TE fit\n")
-    wsp.init_mvn = mvntool(wsp.mvncreate.finalMVN, 1, output=LOAD, mask=wsp.rois.mask, write=True, valim=wsp.aslrest.mean_ftiss_t2corr, varim=wsp.aslrest.var_ftiss, log=wsp.fsllog)["output"]
+    wsp.init_mvn = mvntool(wsp.mvncreate.finalMVN, 1, output=LOAD, mask=wsp.rois.mask, write=True, valim=wsp.aslrest.mean_ftiss, varim=wsp.aslrest.var_ftiss, log=wsp.fsllog)["output"]
     wsp.init_mvn = mvntool(wsp.init_mvn, 2, output=LOAD, mask=wsp.rois.mask, write=True, valim=wsp.aslrest.mean_delttiss, varim=wsp.aslrest.var_delttiss, log=wsp.fsllog)["output"]
 
 def fit_multite(wsp):
     """
+    Run model fitting on multi-TE data
     """
     wsp.log.write("\nPerforming multi-TE model fitting:\n")
     if wsp.asldata.is_var_repeats():
@@ -137,6 +202,11 @@ def fit_multite(wsp):
     # make sure varying TEs are always within each TI
     wsp.asldata = wsp.asldata.diff().reorder(out_order="etr")
     options = _multite_fabber_options(wsp, wsp.asldata)
+
+    if wsp.multite_init_t2:
+        wsp.sub("init_t2")
+        init_t2(wsp.init_t2)
+        wsp.t2 = wsp.init_t2.t2
 
     if wsp.multite_init:
         wsp.sub("init")
@@ -196,6 +266,7 @@ class MultiTEOptions(OptionCategory):
     def groups(self, parser):
         groups = []
         group = IgnorableOptionGroup(parser, "Multi-TE Options", ignore=self.ignore)
+        group.add_option("--multite-init-t2", help="Initialize T2 value", action="store_true", default=False)
         group.add_option("--multite-init", help="Initialize perfusion and transit time using fit on restring state ASL model", action="store_true", default=False)
         group.add_option("--multite-options", help="File containing additional options for multiphase fitting step", type="optfile")
         groups.append(group)
