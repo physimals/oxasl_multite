@@ -41,7 +41,7 @@ def _base_fabber_options(wsp, asldata):
         "ti" : list(asldata.tis),
         "tau" : list(asldata.taus),
         "repeats" : asldata.rpts[0], # We have already checked repeats are fixed
-        "save-mean" : True,      
+        "save-mean" : True,
         "max-iterations": 30,
     }
 
@@ -63,7 +63,9 @@ def _multite_fabber_options(wsp, asldata):
         "model" : "asl_multite",
         "te" : list(wsp.asldata.tes),
         "infertexch" : True,
-        "save-model-fit" : True,        
+        "save-std" : True,
+        "save-model-fit" : True,
+        "save-residuals" : wsp.ifnone("output_residuals", False),
         "max-iterations": 30,
         "t2" : float(wsp.ifnone("t2", 50)) / 1000
     })
