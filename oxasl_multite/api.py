@@ -10,7 +10,7 @@ from fsl.wrappers import LOAD
 from fsl.data.image import Image
 
 from oxasl import basil
-from oxasl.options import OptionCategory, IgnorableOptionGroup
+from oxasl.options import OptionCategory
 from oxasl.reporting import Report
 from oxasl.wrappers import fabber, mvntool
 
@@ -267,7 +267,7 @@ class MultiTEOptions(OptionCategory):
 
     def groups(self, parser):
         groups = []
-        group = IgnorableOptionGroup(parser, "Multi-TE Options", ignore=self.ignore)
+        group = OptionGroup(parser, "Multi-TE Options")
         group.add_option("--multite-init-t2", help="Initialize T2 value", action="store_true", default=False)
         group.add_option("--multite-init", help="Initialize perfusion and transit time using fit on restring state ASL model", action="store_true", default=False)
         group.add_option("--multite-options", help="File containing additional options for multiphase fitting step", type="optfile")
