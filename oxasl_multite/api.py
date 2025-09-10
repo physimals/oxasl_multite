@@ -218,6 +218,10 @@ def fit_multite(wsp):
     result = _run_fabber(wsp.multite.sub("finalstep"), options, "Running Fabber using multi-TE model")
     wsp.log.write("\nDONE multi-TE model fitting\n")
 
+def run(wsp):
+    fit_multite(wsp.sub("multite"))
+    wsp.quantify_wsps.append("multite")
+
 def model_multite(wsp):
     """
     Do modelling on multi-TE ASL data
