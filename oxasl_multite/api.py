@@ -10,7 +10,7 @@ from fsl.wrappers import LOAD
 from fsl.data.image import Image
 
 from oxasl import basil
-from oxasl.options import OptionCategory
+from oxasl.options import OptionCategory, OptionGroup
 from oxasl.reporting import Report
 from oxasl.wrappers import fabber, mvntool
 
