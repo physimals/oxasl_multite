@@ -9,7 +9,7 @@ The relevant processing function can also be called independently
 on a ``Workspace`` object, however this will not include the
 standard oxasl preprocessing or registration.
 """
-from .api import model_multite, MultiTEOptions
+from .api import run, model_multite, MultiTEOptions
 from ._version import __version__
 
-__all__ = ["__version__", "model_multite", "MultiTEOptions"]
+__all__ = ["__version__", "run", "model_multite", "MultiTEOptions"]
