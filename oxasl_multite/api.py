@@ -61,8 +61,8 @@ def _multite_fabber_options(wsp, asldata):
     options = _base_fabber_options(wsp, asldata)
     options.update({
         "model" : "asl_multite",
-        "te" : list(wsp.asldata.tes),
-        "nte" : len(wsp.asldata.tes),
+        "te" : list(wsp.asldata.tes) * len(list(asldata.tis)),
+        "nte" : [len(wsp.asldata.tes)] * len(list(asldata.tis)),
         "infertexch" : True,
         "save-std" : True,
         "save-model-fit" : True,
